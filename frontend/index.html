@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Breathing Monitor</title>
+	<link rel="stylesheet" href="/static/styles.css" />
+	<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+	<header class="app-header">
+		<h1>Breathing Monitor</h1>
+		<div id="auth-controls">
+			<div id="auth-forms">
+				<input id="username" placeholder="Username" autocomplete="username" />
+				<input id="password" placeholder="Password" type="password" autocomplete="current-password" />
+				<button id="btn-login">Login</button>
+				<button id="btn-register" class="secondary">Register</button>
+			</div>
+			<div id="auth-session" class="hidden">
+				<span id="user-label"></span>
+				<button id="btn-logout">Logout</button>
+			</div>
+		</div>
+	</header>
+
+	<main class="container">
+		<section class="status-bar">
+			<div><span class="label">Connection:</span> <span id="conn-status" class="status-dot offline">Offline</span></div>
+			<div><span class="label">Sample Rate:</span> <span id="sample-rate">0</span> Hz</div>
+			<div><span class="label">Device Key:</span> <span id="device-key">—</span></div>
+		</section>
+
+		<section class="alerts">
+			<div class="alerts-header">
+				<h2>Alerts</h2>
+				<div class="alert-settings">
+					<label>Apnea window (s): <input id="apnea-window" type="number" min="3" max="60" value="10" /></label>
+					<label>Amplitude threshold (mV): <input id="apnea-threshold" type="number" min="1" max="1000" value="10" /></label>
+					<label>Low sample rate (Hz): <input id="sr-threshold" type="number" min="10" max="1000" value="900" /></label>
+					<label><input type="checkbox" id="alert-sound" checked /> Sound</label>
+				</div>
+			</div>
+			<ul id="alert-list" class="alert-list"></ul>
+		</section>
+
+		<section class="charts-grid">
+			<canvas id="chart1"></canvas>
+			<canvas id="chart2"></canvas>
+			<canvas id="chart3"></canvas>
+		</section>
+
+		<section class="controls">
+			<button id="btn-export">Export CSV</button>
+			<button id="btn-test" class="secondary">Send Test Sample</button>
+			<label><input type="checkbox" id="toggle-log" checked /> Log to Browser</label>
+			<label>Window (s): <input id="window-seconds" type="number" min="1" max="60" value="10" /></label>
+		</section>
+	</main>
+
+	<script src="/static/app.js"></script>
+</body>
+</html>
+
+
