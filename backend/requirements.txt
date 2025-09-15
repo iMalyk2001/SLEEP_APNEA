@@ -6,6 +6,9 @@ python-jose[cryptography]==3.3.0
 pydantic==2.9.2
 starlette==0.38.5
 python-multipart==0.0.9
+numpy==2.0.2
+scipy==1.13.1
+pytest==8.2.1
 
 
 

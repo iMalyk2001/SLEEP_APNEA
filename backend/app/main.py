@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,12 @@ from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .routes_auth import router as auth_router
 from .routes_ingest import router as ingest_router, manager as ws_manager
+from .routes_ingest import _get_user_by_device_key
 from .auth import decode_token
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Breathing Monitor Backend")
 
@@ -73,8 +79,32 @@ async def websocket_endpoint(websocket: WebSocket, token: str, db: Session = Dep
 			pass
 
 
+@app.websocket("/ws/device")
+async def device_websocket(websocket: WebSocket, key: str, db: Session = Depends(get_db)):
+	# Authenticate device by device key
+	try:
+		user = _get_user_by_device_key(db, key)
+	except Exception:
+		await websocket.close(code=4401)
+		return
+
+	# Accept connection and broadcast presence
+	await websocket.accept()
+	try:
+		await ws_manager.broadcast_to_user(user.id, {"type": "device_online"})
+		# Keep the connection open, receive heartbeats
+		while True:
+			_ = await websocket.receive_text()
+	except WebSocketDisconnect:
+		await ws_manager.broadcast_to_user(user.id, {"type": "device_offline"})
+	except Exception:
+		await ws_manager.broadcast_to_user(user.id, {"type": "device_offline"})
+		try:
+			await websocket.close()
+		except Exception:
+			pass
+
+
 if __name__ == "__main__":
 	import uvicorn
 	uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
-
-
