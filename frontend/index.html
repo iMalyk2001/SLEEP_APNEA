@@ -28,6 +28,7 @@
 		<section class="status-bar">
 			<div><span class="label">Connection:</span> <span id="conn-status" class="status-dot offline">Offline</span></div>
 			<div><span class="label">Sample Rate:</span> <span id="sample-rate">0</span> Hz</div>
+			<div><span class="label">BPM:</span> <span id="bpm-label">—</span></div>
 			<div><span class="label">Device Key:</span> <span id="device-key">—</span></div>
 		</section>
 
@@ -36,8 +37,12 @@
 				<h2>Alerts</h2>
 				<div class="alert-settings">
 					<label>Apnea window (s): <input id="apnea-window" type="number" min="3" max="60" value="10" /></label>
-					<label>Amplitude threshold (mV): <input id="apnea-threshold" type="number" min="1" max="1000" value="10" /></label>
-					<label>Low sample rate (Hz): <input id="sr-threshold" type="number" min="10" max="1000" value="900" /></label>
+					<label>Amplitude threshold (mV): <input id="apnea-threshold" type="number" min="1" max="1000" value="5" /></label>
+					<div class="sr-control">
+						<label for="sr-slider">Low sample rate (Hz): <span id="sr-threshold-label">100</span></label>
+						<input id="sr-slider" type="range" min="10" max="1000" step="10" value="100" />
+						<button id="sr-apply" class="secondary">Apply</button>
+					</div>
 					<label><input type="checkbox" id="alert-sound" checked /> Sound</label>
 				</div>
 			</div>
@@ -45,9 +50,8 @@
 		</section>
 
 		<section class="charts-grid">
-			<canvas id="chart1"></canvas>
-			<canvas id="chart2"></canvas>
-			<canvas id="chart3"></canvas>
+			<canvas id="chart1" height="240"></canvas>
+			<canvas id="chart2" height="240"></canvas>
 		</section>
 
 		<section class="controls">

@@ -20,12 +20,20 @@
 		chart: null,
 		chart2: null,
 		chart3: null,
+		bpm: null,
+		lastBpm: null,
+		bpmSeries: [], // smoothed BPM values used for chart
+		bpmRawSeries: [], // raw BPM values before smoothing
+		bpmSmoothingWindow: 10, // number of recent BPM values for rolling average
 		updatePending: false,
 		alerts: [],
 		apneaWindowSec: 10,
-		apneaMvThreshold: 10,
-		srThreshold: 900,
+		apneaMvThreshold: 5,
+		srThreshold: 100,
+		srAutoInitDone: false,
 		alertSound: true,
+		bpmBelowStartMs: 0,
+		bpmAlarmActive: false,
 		lastDisconnectAlertAt: 0,
 	};
 
@@ -51,8 +59,11 @@
 		alertList: document.getElementById('alert-list'),
 		apneaWindow: document.getElementById('apnea-window'),
 		apneaThreshold: document.getElementById('apnea-threshold'),
-		srThreshold: document.getElementById('sr-threshold'),
+		srThresholdLabel: document.getElementById('sr-threshold-label'),
+		srSlider: document.getElementById('sr-slider'),
+		srApply: document.getElementById('sr-apply'),
 		alertSound: document.getElementById('alert-sound'),
+		bpmLabel: document.getElementById('bpm-label'),
 	};
 
 	// IndexedDB per-user
@@ -120,9 +131,8 @@
 		if(state.updatePending) return;
 		state.updatePending = true;
 		requestAnimationFrame(()=>{
-			state.chart.update('none');
-			state.chart2.update('none');
-			state.chart3.update('none');
+			try{ state.chart.update('none'); }catch(e){}
+			try{ state.chart2.update('none'); }catch(e){}
 			state.updatePending = false;
 		});
 	}
@@ -134,25 +144,37 @@
 			maintainAspectRatio: false,
 			scales: {
 				x: { display: false },
-				y: { title: { display: true, text: 'mV' }, grid: { color: 'rgba(255,255,255,0.06)' } },
+				y: { title: { display: true, text: 'mV' }, grid: { color: 'rgba(255,255,255,0.06)' }, beginAtZero: false, suggestedMin: -50, suggestedMax: 50 },
 			},
 			plugins: { legend: { display: false } },
 		};
+		// Top chart: BPM only (0-150)
 		state.chart = new Chart(els.c1.getContext('2d'), {
 			type: 'line',
-			data: { labels: state.buffers.labels, datasets: [{ data: state.buffers.s1, borderColor: '#2f81f7', borderWidth: 1, pointRadius: 0 }] },
-			options: common,
+			data: { labels: state.buffers.labels, datasets: [
+				{ data: state.bpmSeries, borderColor: '#f0c000', borderWidth: 2, pointRadius: 0 },
+			]},
+			options: {
+				animation: false,
+				responsive: true,
+				maintainAspectRatio: false,
+				scales: {
+					x: { display: false },
+					y: { title: { display: true, text: 'BPM' }, min: 0, max: 150, grid: { color: 'rgba(255,255,255,0.06)' } },
+				},
+				plugins: { legend: { display: false } },
+			},
 		});
 		state.chart2 = new Chart(els.c2.getContext('2d'), {
 			type: 'line',
-			data: { labels: state.buffers.labels, datasets: [{ data: state.buffers.s2, borderColor: '#2ea043', borderWidth: 1, pointRadius: 0 }] },
+			// Bottom chart: combined mV waveforms (sensor1 blue, sensor2 green)
+			data: { labels: state.buffers.labels, datasets: [
+				{ data: state.buffers.s1, borderColor: '#2f81f7', borderWidth: 1, pointRadius: 0 },
+				{ data: state.buffers.s2, borderColor: '#2ea043', borderWidth: 1, pointRadius: 0 },
+			] },
 			options: common,
 		});
-		state.chart3 = new Chart(els.c3.getContext('2d'), {
-			type: 'line',
-			data: { labels: state.buffers.labels, datasets: [{ data: state.buffers.s3, borderColor: '#f85149', borderWidth: 1, pointRadius: 0 }] },
-			options: common,
-		});
+		// Removed third chart
 	}
 
 	function trimWindow(){
@@ -166,6 +188,10 @@
 		trim(state.buffers.s1);
 		trim(state.buffers.s2);
 		trim(state.buffers.s3);
+		trim(state.bpmSeries);
+		// Keep BPM buffers bounded as well (use smaller bound based on smoothing window)
+		const bpmMax = Math.max(state.bpmSmoothingWindow * 4, 120);
+		if(state.bpmRawSeries.length > bpmMax){ state.bpmRawSeries.splice(0, state.bpmRawSeries.length - bpmMax); }
 	}
 
 	function onSample(s){
@@ -184,9 +210,61 @@
 			state.lastSecondTs = s.timestamp;
 			els.sampleRate.textContent = String(state.lastSecondCount);
 			checkLowSampleRate();
+			// Auto-initialize low SR threshold to first measured rate once
+			if(!state.srAutoInitDone && state.lastSecondCount > 0){
+				state.srThreshold = state.lastSecondCount;
+				if(els.srSlider){ els.srSlider.value = String(state.srThreshold); }
+				if(els.srThresholdLabel){ els.srThresholdLabel.textContent = String(state.srThreshold); }
+				state.srAutoInitDone = true;
+			}
 		}
+		// Server BPM carry-forward: add lastBpm so the line remains continuous
+		const carry = (typeof state.lastBpm === 'number' && isFinite(state.lastBpm)) ? state.lastBpm : null;
+		state.bpmSeries.push(carry);
 		scheduleChartUpdate();
 		checkApnea();
+	}
+
+	function computeBpm(samples, sampleRateHz){
+		const fs = sampleRateHz;
+		if(!samples || samples.length < Math.floor(5 * fs)) return null;
+		// 1) Detrend (~0.5 s)
+		const w = Math.max(1, Math.floor(0.5 * fs));
+		const detr = [];
+		let acc = 0;
+		for(let i=0;i<samples.length;i++){
+			acc += samples[i];
+			if(i >= w) acc -= samples[i - w];
+			detr.push(samples[i] - acc / Math.min(i + 1, w));
+		}
+		// 2) Rectify + smooth (~0.3 s)
+		const rect = detr.map(x=>Math.abs(x));
+		const w2 = Math.max(1, Math.floor(0.3 * fs));
+		const sm = [];
+		acc = 0;
+		for(let i=0;i<rect.length;i++){
+			acc += rect[i];
+			if(i >= w2) acc -= rect[i - w2];
+			sm.push(acc / Math.min(i + 1, w2));
+		}
+		// 3) Threshold + peak detection (min 0.8 s)
+		const mean = sm.reduce((a,b)=>a+b,0) / sm.length;
+		const std = Math.sqrt(sm.reduce((a,x)=>a+(x-mean)**2,0) / sm.length);
+		const thr = mean + 0.5 * std;
+		const minDist = Math.floor(0.8 * fs);
+		const peaks = [];
+		let last = -minDist;
+		for(let i=1;i<sm.length-1;i++){
+			if(sm[i] > thr && sm[i] > sm[i-1] && sm[i] >= sm[i+1] && (i - last) >= minDist){
+				peaks.push(i);
+				last = i;
+			}
+		}
+		if(peaks.length < 2) return null;
+		const ibis = [];
+		for(let i=1;i<peaks.length;i++) ibis.push((peaks[i]-peaks[i-1])/fs);
+		const avgIbi = ibis.reduce((a,b)=>a+b,0) / ibis.length;
+		return 60 / avgIbi;
 	}
 
 	function pushAlert(type, text){
@@ -197,7 +275,7 @@
 		li.innerHTML = `<span>${text}</span><span class="time">${ts.toLocaleTimeString()}</span>`;
 		els.alertList.prepend(li);
 		if(els.alertList.children.length > 100){ els.alertList.removeChild(els.alertList.lastChild); }
-		if(state.alertSound){ beep(); }
+		// Sound is managed by checkBpmAlarm() for BPM-low; other alerts are silent
 	}
 
 	let audioCtx; let beepGain;
@@ -218,6 +296,31 @@
 		o.connect(beepGain);
 		o.start();
 		setTimeout(()=>{ try{ o.stop(); o.disconnect(); }catch(e){} }, 150);
+	}
+
+	// Continuous alarm (starts when BPM<60 for 10s, stops on recovery)
+	let alarmOsc = null;
+	let alarmGainNode = null;
+	function alarmStartContinuous(){
+		if(!state.alertSound) return;
+		if(!audioCtx) initAudio();
+		if(!audioCtx) return;
+		if(alarmOsc) return; // already sounding
+		alarmOsc = audioCtx.createOscillator();
+		alarmGainNode = audioCtx.createGain();
+		alarmOsc.type = 'square';
+		alarmOsc.frequency.value = 1800;
+		alarmGainNode.gain.value = 0.2;
+		alarmOsc.connect(alarmGainNode);
+		alarmGainNode.connect(beepGain);
+		alarmOsc.start();
+	}
+	function alarmStopContinuous(){
+		try{
+			if(alarmOsc){ alarmOsc.stop(); alarmOsc.disconnect(); }
+			if(alarmGainNode){ alarmGainNode.disconnect(); }
+		}catch(e){}
+		alarmOsc = null; alarmGainNode = null;
 	}
 
 	function rms(arr){
@@ -249,7 +352,28 @@
 
 	function checkLowSampleRate(){
 		if(state.lastSecondCount > 0 && state.lastSecondCount < state.srThreshold){
+			// no beep for low-sr; informational only
 			pushAlert('low-sr', `Low sample rate: ${state.lastSecondCount} Hz (< ${state.srThreshold} Hz)`);
+		}
+	}
+
+	function checkBpmAlarm(currentBpm){
+		const now = Date.now();
+		if(typeof currentBpm === 'number' && currentBpm < 60){
+			if(state.bpmBelowStartMs === 0){ state.bpmBelowStartMs = now; }
+			const elapsed = now - state.bpmBelowStartMs;
+			if(!state.bpmAlarmActive && elapsed >= 10000){
+				state.bpmAlarmActive = true;
+				pushAlert('bpm-low', `BPM low: ${currentBpm.toFixed(1)} (< 60) for 10s`);
+				alarmStartContinuous();
+			}else if(state.bpmAlarmActive){
+				// keep alarm sounding while still low
+				alarmStartContinuous();
+			}
+		}else{
+			state.bpmBelowStartMs = 0;
+			if(state.bpmAlarmActive){ alarmStopContinuous(); }
+			state.bpmAlarmActive = false;
 		}
 	}
 
@@ -266,6 +390,28 @@
 		ws.onmessage = (ev)=>{
 			try {
 				const msg = JSON.parse(ev.data);
+				// Handle server-computed BPM messages with smoothing
+				if(msg && msg.type === 'bpm' && typeof msg.bpm === 'number'){
+					state.bpm = msg.bpm;
+					state.bpmRawSeries.push(msg.bpm);
+					// Rolling average over last N values
+					const N = state.bpmSmoothingWindow;
+					const len = state.bpmRawSeries.length;
+					const start = Math.max(0, len - N);
+					let sum = 0, c = 0;
+					for(let i=start;i<len;i++){ const v = state.bpmRawSeries[i]; if(typeof v === 'number'){ sum += v; c++; } }
+					const smooth = c ? (sum / c) : msg.bpm;
+					if(state.bpmSeries.length > 0){
+						state.bpmSeries[state.bpmSeries.length - 1] = smooth;
+					}else{
+						state.bpmSeries.push(smooth);
+					}
+					state.lastBpm = smooth;
+					els.bpmLabel.textContent = smooth.toFixed(1);
+					checkBpmAlarm(smooth);
+					scheduleChartUpdate();
+					return;
+				}
 				if(msg && (typeof msg.sensor1 !== 'undefined' || typeof msg.sensor2 !== 'undefined')){
 					onSample(msg);
 				}
@@ -322,6 +468,7 @@
 
 	async function sendTestSample(){
 		if(!state.deviceKey){ alert('No Device Key. Login first.'); return; }
+		// Send with legacy keys; backend accepts and normalizes
 		const payload = { timestamp: Date.now(), sensor1: Math.random()*50+50, sensor2: Math.random()*30+20, sensor3: 0 };
 		try{
 			const r = await fetch('/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Key': state.deviceKey }, body: JSON.stringify(payload) });
@@ -339,13 +486,23 @@
 		els.windowSeconds.addEventListener('change', ()=>{ state.windowSeconds = Math.max(1, Math.min(60, parseInt(els.windowSeconds.value||'10',10))); });
 		els.apneaWindow.addEventListener('change', ()=>{ state.apneaWindowSec = Math.max(3, Math.min(60, parseInt(els.apneaWindow.value||'10',10))); });
 		els.apneaThreshold.addEventListener('change', ()=>{ state.apneaMvThreshold = Math.max(1, Math.min(1000, parseInt(els.apneaThreshold.value||'10',10))); });
-		els.srThreshold.addEventListener('change', ()=>{ state.srThreshold = Math.max(10, Math.min(1000, parseInt(els.srThreshold.value||'900',10))); });
+		if(els.srSlider && els.srThresholdLabel && els.srApply){
+			els.srThresholdLabel.textContent = String(els.srSlider.value);
+			els.srSlider.addEventListener('input', ()=>{ els.srThresholdLabel.textContent = String(els.srSlider.value); });
+			els.srApply.addEventListener('click', ()=>{ state.srThreshold = Math.max(10, Math.min(1000, parseInt(els.srSlider.value||'900',10))); pushAlert('info', `Low SR threshold set to ${state.srThreshold} Hz`); });
+		}
 		els.alertSound.addEventListener('change', ()=>{ state.alertSound = els.alertSound.checked; });
 	}
 
 	function init(){
 		bindUI();
 		initCharts();
+		// Initialize SR threshold from slider if present
+		if(els.srSlider){
+			const v = parseInt(els.srSlider.value||'900', 10);
+			if(!isNaN(v)) state.srThreshold = Math.max(10, Math.min(1000, v));
+			if(els.srThresholdLabel) els.srThresholdLabel.textContent = String(v);
+		}
 	}
 
 	init();

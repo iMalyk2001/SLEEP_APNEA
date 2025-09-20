@@ -65,3 +65,76 @@ def compute_bpm(
 	return {"bpm": bpm, "breaths_ts_idx": peaks.tolist(), "confidence": conf}
 
 
+# Peak-to-peak amplitude thresholding (defaults; tune as needed)
+P2P_START_THRESHOLD_MV: float = 20.0  # require >= this to start
+P2P_STOP_THRESHOLD_MV: float = 12.0   # drop below this to stop (hysteresis)
+P2P_WINDOW_SEC: float = 5.0           # window length in seconds
+P2P_REQUIRED_WINDOWS: int = 2         # consecutive windows above threshold
+
+
+def evaluate_signal_presence(
+	samples: List[float],
+	sample_rate_hz: float,
+	latest_ts_ms: int,
+	prev_state: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+	"""Evaluate peak-to-peak signal presence with hysteresis over fixed windows.
+
+	State keys:
+	  - signal_ok: bool
+	  - above_count: int  (consecutive windows above start threshold)
+	  - last_window_index: Optional[int]  (integer index of last evaluated window)
+	  - last_p2p_mv: float  (for diagnostics)
+	"""
+	fs = float(max(1.0, sample_rate_hz))
+	window_len = int(max(1, round(P2P_WINDOW_SEC * fs)))
+	window_ms = int(P2P_WINDOW_SEC * 1000.0)
+
+	state: Dict[str, object] = {
+		"signal_ok": False,
+		"above_count": 0,
+		"last_window_index": None,
+		"last_p2p_mv": 0.0,
+	}
+	if isinstance(prev_state, dict):
+		state.update(prev_state)
+
+	if not samples:
+		state.update({"signal_ok": False, "above_count": 0, "last_p2p_mv": 0.0})
+		return state
+
+	current_window_index = int(latest_ts_ms // max(1, window_ms))
+	if state.get("last_window_index") == current_window_index:
+		return state
+
+	tail = samples[-window_len:] if len(samples) >= window_len else samples[:]
+	clean = [float(v) for v in tail if isinstance(v, (int, float))]
+	if not clean:
+		state.update({"signal_ok": False, "above_count": 0, "last_window_index": current_window_index, "last_p2p_mv": 0.0})
+		return state
+
+	p2p = float(max(clean) - min(clean))
+	signal_ok = bool(state.get("signal_ok", False))
+	above_count = int(state.get("above_count", 0))
+
+	if signal_ok:
+		if p2p < P2P_STOP_THRESHOLD_MV:
+			signal_ok = False
+			above_count = 0
+	else:
+		if p2p >= P2P_START_THRESHOLD_MV:
+			above_count += 1
+			if above_count >= P2P_REQUIRED_WINDOWS:
+				signal_ok = True
+		else:
+			above_count = 0
+
+	state.update({
+		"signal_ok": signal_ok,
+		"above_count": above_count,
+		"last_window_index": current_window_index,
+		"last_p2p_mv": p2p,
+	})
+	return state
+
+
