@@ -18,7 +18,6 @@ Hardware: ESP32 WROOM + 2-3 piezo sensors. Data sent over WiFi via HTTP POST to 
 python -m venv .venv
 . .venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
-$env:APP_SECRET_KEY = "change-me"
 python -m uvicorn app.main:app --app-dir backend --reload --port 8000
 ```
 Open `http://localhost:8000` in your browser.
@@ -106,9 +105,3 @@ void loop(){
 		}
 	}
 }
-```
-
-## Notes
-- Units: mV. Calibrate ADC scaling on ESP32 to convert counts to mV.
-- Frontend plots at display refresh (~60 FPS), not every sample; all samples still logged.
-- Keep JWT secret safe; set `APP_SECRET_KEY` in production.
